@@ -1,0 +1,58 @@
+/* === MECHVI DARK PREMIUM GLOBAL STYLE === */
+
+:root {
+  --bg-primary: #050509;
+  --bg-secondary: #0b0b0d;
+  --bg-glass: rgba(15, 23, 42, 0.55);
+
+  --text-primary: #f3f4f6;
+  --text-secondary: #cbd5e1;
+
+  --accent-amber: #fbbf24;
+  --accent-orange: #f97316;
+  --accent-blue: #38bdf8;
+
+  --radius-lg: 22px;
+  --radius-md: 16px;
+  --radius-sm: 10px;
+
+  --shadow-soft: 0 18px 50px rgba(0,0,0,0.45);
+  --shadow-hard: 0 22px 70px rgba(0,0,0,0.65);
+
+  --blur-strong: blur(18px);
+  --blur-soft: blur(10px);
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Inter', sans-serif;
+  overflow-x: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button {
+  transition: all 0.25s ease;
+}
+
+button:hover {
+  transform: translateY(-2px);
+  opacity: 0.92;
+}
+
+.glass {
+  background: var(--bg-glass);
+  backdrop-filter: var(--blur-strong);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: var(--shadow-soft);
+}
+
+.text-glow {
+  text-shadow: 0 18px 40px rgba(0,0,0,0.65), 0 2px 10px rgba(0,0,0,0.35);
+}
+

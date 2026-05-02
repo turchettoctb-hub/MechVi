@@ -1,0 +1,1050 @@
+==== TREE (app/prisma/public) ====
+Folder PATH listing for volume OS
+Volume serial number is B8AF-644D
+C:\USERS\TURCH\ONEDRIVE\DESKTOP\MECHVI\MECHVI\APP
+|   favicon.ico
+|   globals.css
+|   layout.tsx
+|   page.module.css
+|   page.tsx
+|   
++---api
+|   +---ask
+|   |       mechvi_schema.ts
+|   |       prompts.ts
+|   |       route.ts
+|   |       
+|   +---auth
+|   |   \---[...nextauth]
+|   |           route.ts
+|   |           
+|   +---debug-usage
+|   |       route.ts
+|   |       
+|   +---logout
+|   |       route.ts
+|   |       
+|   +---register
+|   |       route.ts
+|   |       
+|   \---test-openai
+|           route.ts
+|           
++---components
+|       AskBox.tsx
+|       HeroCarousel.tsx
+|       HomeClient.tsx
+|       VehicleForm.tsx
+|       VehicleSelector.tsx
+|       
++---login
+|       page.tsx
+|       
+\---register
+        page.tsx
+        
+Folder PATH listing for volume OS
+Volume serial number is B8AF-644D
+C:\USERS\TURCH\ONEDRIVE\DESKTOP\MECHVI\MECHVI\PRISMA
+|   dev.db
+|   schema.prisma
+|   
+\---migrations
+    |   migration_lock.toml
+    |   
+    \---20260216081411_init
+            migration.sql
+            
+Folder PATH listing for volume OS
+Volume serial number is B8AF-644D
+C:\USERS\TURCH\ONEDRIVE\DESKTOP\MECHVI\MECHVI\PUBLIC
+|   file.svg
+|   globe.svg
+|   mechvi-logo.svg
+|   next.svg
+|   vercel.svg
+|   window.svg
+|   
++---brands
+|       audi.svg
+|       bmw.svg
+|       ford.svg
+|       holden.svg
+|       honda.svg
+|       hyundai.svg
+|       kia.svg
+|       mazda.svg
+|       mercedes.svg
+|       mitsubishi.svg
+|       nissan.svg
+|       subaru.svg
+|       toyota.svg
+|       
+\---hero
+        1.jpg
+        2.jpg
+        3.jpg
+        4.jpg
+        5.jpg
+        
+
+==== FILE: app/api/ask/route.ts ====
+import { NextResponse } from "next/server";
+import OpenAI from "openai";
+import { prisma } from "@/lib/prisma";
+import { auth } from "@/auth";
+import { buildQuickPrompt } from "./prompts";
+
+type Mode = "quick" | "report";
+type Access = "FREE" | "PAY_PER_REPORT" | "SUBSCRIBER";
+
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+function numEnv(name: string, fallback: number) {
+  const v = Number(process.env[name] ?? "");
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+function monthKeyUTC(d = new Date()) {
+  return d.toISOString().slice(0, 7); // YYYY-MM
+}
+
+function modelFor(access: Access, economy: boolean) {
+  if (economy) return process.env.MECHVI_ECONOMY_MODEL || "gpt-5-nano";
+  if (access === "FREE") return process.env.MECHVI_MODEL_FREE || "gpt-5-nano";
+  if (access === "PAY_PER_REPORT") return process.env.MECHVI_MODEL_REPORT || "gpt-5-mini";
+  return process.env.MECHVI_MODEL_SUBSCRIBER || "gpt-5.2";
+}
+
+function maxOutFor(access: Access, economy: boolean, mode: Mode) {
+  if (economy) return numEnv("MECHVI_ECONOMY_MAX_OUT", 450);
+  if (access === "FREE") return mode === "quick" ? 650 : 900;
+  if (access === "PAY_PER_REPORT") return 1900;
+  return 2200;
+}
+
+function paywallResponse(mode: Mode) {
+  const isReport = mode === "report";
+  const bullets = isReport
+    ? ["This is a placeholder paywall.", "In production, Stripe will unlock 1 report credit.", "Subscribers get the best answers + Garage + alerts."]
+    : ["You used all FREE quick verdicts for this month.", "Get a $2.99 report, or subscribe for full access."];
+
+  return {
+    meta: { assistant: "mechvi", version: "1.2", access_level: "FREE", locale: "en-AU", intent: "buy", disclaimer_level: "light" },
+    status: { needs_clarification: false, clarifying_questions: [], data_confidence: "low" },
+    vehicle_summary: { label: "MechVi", km: null, notes: ["Paywall response (no AI call)."] },
+    entitlements: {
+      garage: { can_save_vehicle: true, free_slots_total: 1, free_slots_used: 0 },
+      alerts: { enabled: false },
+      logbook: { enabled: false },
+      personalised_plan: { enabled: false },
+    },
+    cards: [
+      {
+        type: "paywall_notice",
+        title: isReport ? "Unlock report" : "Free limit reached",
+        severity: "warning",
+        bullets,
+        table: { columns: [], rows: [] },
+        score: { label: "", value: null, scale_max: 10, bands: [] },
+        actions: [
+          { id: "pay_report", label: "Get $2.99 Report (placeholder)", action_type: "paywall", payload: { product: "mechvi_report", price_aud: 2.99 } },
+          { id: "subscribe", label: "Subscribe $7.99/m (placeholder)", action_type: "subscribe", payload: { plan: "plus", price_aud_per_month: 7.99 } },
+        ],
+      },
+    ],
+    cta: { label: "Subscribe $7.99/m (placeholder)", action_type: "subscribe", payload: { plan: "plus", price_aud_per_month: 7.99 } },
+  };
+}
+
+// Robustly extract JSON from model text
+function extractJson(text: string): any {
+  const t = text.trim();
+  if (!t) throw new Error("Empty model output");
+
+  // If it's already JSON
+  if (t.startsWith("{") && t.endsWith("}")) return JSON.parse(t);
+
+  // Try to find first {...} block
+  const first = t.indexOf("{");
+  const last = t.lastIndexOf("}");
+  if (first >= 0 && last > first) {
+    const slice = t.slice(first, last + 1);
+    return JSON.parse(slice);
+  }
+
+  throw new Error("Could not parse JSON from model output");
+}
+
+function ensureQuickCards(parsed: any) {
+  const cards = Array.isArray(parsed.cards) ? parsed.cards : [];
+
+  const mkCard = (type: string, title: string) => ({
+    type,
+    title,
+    severity: "info",
+    bullets: [],
+    table: { columns: [], rows: [] },
+    score: { label: "", value: null, scale_max: 3, bands: [] },
+    actions: [],
+  });
+
+  const get = (type: string, title: string) => {
+    let c = cards.find((x: any) => x?.type === type);
+    if (!c) {
+      c = mkCard(type, title);
+      cards.push(c);
+    }
+    c.title = title;
+    c.severity = c.severity || "info";
+    c.bullets = Array.isArray(c.bullets) ? c.bullets : [];
+    c.actions = [];
+    return c;
+  };
+
+  const summary = get("summary", "Quick Verdict");
+
+  // Normalize fit
+  const raw = Number(summary?.score?.value);
+  const norm = raw === 3 ? 3 : raw === 1 ? 1 : 2;
+  const fitName = norm === 3 ? "Good ✅" : norm === 2 ? "Mixed 🤔" : "Lemon 🍋";
+
+  const cleaned = (summary.bullets as any[])
+    .map((b) => String(b || "").trim())
+    .filter(Boolean)
+    .filter((b) => !/^fit:\s*/i.test(b));
+
+  const extra = cleaned.slice(0, 2);
+  while (extra.length < 2) extra.push("Mechanic-style guidance, not guesswork.");
+
+  summary.bullets = [`Fit: ${fitName}`, extra[0], extra[1]];
+  summary.score = summary.score || {};
+  summary.score.label = "Fit";
+  summary.score.value = norm;
+  summary.score.scale_max = 3;
+  summary.score.bands = [
+    { name: "Good", min: 3, max: 3 },
+    { name: "Mixed", min: 2, max: 2 },
+    { name: "Lemon", min: 1, max: 1 },
+  ];
+
+  const risk = get("risk_flags", "Common Problems / Red Flags");
+  if (!risk.bullets.length) {
+    risk.bullets = [
+      "Service history is king — missed servicing = hidden problems.",
+      "Check for leaks, overheating signs, smoke, and weird driveline noises.",
+      "If diesel: watch for DPF/EGR issues (short trips) + rough idle.",
+    ];
+  }
+  risk.bullets = (risk.bullets as any[]).slice(0, 3);
+
+  const costs = get("costs", "Fuel & Running Costs");
+  if (!costs.bullets.length) {
+    costs.bullets = [
+      "Real fuel use depends on city vs highway and load/towing.",
+      "Tyres + brakes are the big predictable costs.",
+      "Neglect + short trips (diesel) = expensive surprises.",
+    ];
+  }
+  costs.bullets = (costs.bullets as any[]).slice(0, 3);
+
+  const checklist = get("checklist", "Before You Buy (5-minute check)");
+  if ((checklist.bullets as any[]).length < 5) {
+    checklist.bullets = [
+      "Tyres + brakes: look for uneven wear + thin pads through the wheel.",
+      "Open bonnet: check oil level/colour + coolant level (no sludge).",
+      "Cold start: listen for rattles/knocks; watch for smoke.",
+      "Test drive: straight braking, smooth shifts, no vibrations.",
+      "Paperwork: service history + PPSR/rego + scan for fault codes.",
+    ];
+  }
+  checklist.bullets = (checklist.bullets as any[]).slice(0, 5);
+
+  // Remove generic next_steps if present
+  parsed.cards = cards.filter((c: any) => c?.type !== "next_steps");
+  return parsed;
+}
+
+export async function POST(req: Request) {
+  try {
+    const session = await auth();
+    const email = session?.user?.email ? String(session.user.email).toLowerCase() : null;
+
+    const body = await req.json();
+    const mode: Mode = (body.mode || "quick") as Mode;
+
+    const vp = body.vehicleProfile || {};
+    const make = String(vp.make || "").trim();
+    const model = String(vp.model || "").trim();
+    const year = Number(vp.year || 0);
+    const transmission = String(vp.transmission || "unknown");
+    const fuel = String(vp.fuel || "unknown");
+    const cylinders = String(vp.cylinders || "unknown");
+    const km = vp.km === null || vp.km === undefined ? null : Number(vp.km);
+    const locale = String(body.locale || "en-AU");
+
+    if (!make || !model || !year) {
+      return NextResponse.json({ error: "Missing make/model/year" }, { status: 400 });
+    }
+
+    // Determine access
+    let access: Access = "FREE";
+    let userId: string | null = null;
+
+    if (email) {
+      const u = await prisma.user.findUnique({ where: { email } });
+      if (u) {
+        userId = u.id;
+        access = u.tier === "SUBSCRIBER" ? "SUBSCRIBER" : "FREE";
+      }
+    }
+
+    // Usage limits
+    const mk = monthKeyUTC();
+    const freeLimit = numEnv("MECHVI_FREE_MONTHLY_LIMIT", 3);
+    const subLimit = numEnv("MECHVI_SUBSCRIBER_MONTHLY_LIMIT", 300);
+
+    let usageCount = 0;
+    let economy = false;
+
+    if (userId) {
+      const row = await prisma.usage.upsert({
+        where: { userId_monthKey: { userId, monthKey: mk } },
+        update: {},
+        create: { userId, monthKey: mk, count: 0 },
+      });
+      usageCount = row.count;
+
+      if (access === "FREE" && mode === "quick" && usageCount >= freeLimit) {
+        return NextResponse.json(paywallResponse("quick"), { status: 200 });
+      }
+
+      if (access === "SUBSCRIBER" && usageCount >= subLimit) {
+        economy = true;
+      }
+    } else {
+      // No login → treat as FREE but allow (for now)
+      if (mode === "report") {
+        // report is paid feature in production; keep placeholder paywall for anonymous
+        return NextResponse.json(paywallResponse("report"), { status: 200 });
+      }
+    }
+
+    // Increment usage for logged-in users (only when we actually call the model)
+    if (userId) {
+      await prisma.usage.update({
+        where: { userId_monthKey: { userId, monthKey: mk } },
+        data: { count: { increment: 1 } },
+      });
+    }
+
+    const vehicleLabel = `${year} ${make} ${model}`.trim();
+
+    const prompt =
+      mode === "quick"
+        ? buildQuickPrompt({ make, model, year, transmission, fuel, cylinders, km, locale })
+        : `
+You are MechVi — your mechanic in your pocket (Australia).
+Write for a total beginner. Practical, no fluff.
+
+Vehicle:
+- ${vehicleLabel}
+- Transmission=${transmission}, Fuel=${fuel}, Cylinders=${cylinders}, Km=${km ?? "unknown"}
+
+Return JSON ONLY in the same schema as quick mode, but more detailed:
+Include cards: summary, risk_flags, costs, checklist, plan.
+In checklist, be step-by-step and detailed for a beginner.
+In plan, give first 30 days actions + what to service first.
+`.trim();
+
+    const modelName = modelFor(access, economy);
+    const max_output_tokens = maxOutFor(access, economy, mode);
+
+    const resp = await client.responses.create({
+      model: modelName,
+      input: prompt,
+      max_output_tokens,
+    });
+
+    const outText = (resp as any).output_text || "";
+    let parsed = extractJson(outText);
+
+    // Enforce meta and entitlements shape
+    parsed.meta = parsed.meta || {};
+    parsed.meta.assistant = "mechvi";
+    parsed.meta.version = "1.2";
+    parsed.meta.access_level = access;
+    parsed.meta.locale = locale;
+    parsed.meta.intent = "buy";
+    parsed.meta.disclaimer_level = "light";
+
+    parsed.entitlements = parsed.entitlements || {};
+    parsed.entitlements.garage = { can_save_vehicle: true, free_slots_total: 1, free_slots_used: 0 };
+    parsed.entitlements.alerts = { enabled: access === "SUBSCRIBER" };
+    parsed.entitlements.logbook = { enabled: access === "SUBSCRIBER" };
+    parsed.entitlements.personalised_plan = { enabled: access === "SUBSCRIBER" };
+
+    // CTA rules
+    if (mode === "report" && access !== "SUBSCRIBER") {
+      parsed.cta = { label: "Get $2.99 Report (placeholder)", action_type: "paywall", payload: { product: "mechvi_report", price_aud: 2.99 } };
+    } else if (access !== "SUBSCRIBER") {
+      parsed.cta = { label: "Subscribe $7.99/m (placeholder)", action_type: "subscribe", payload: { plan: "plus", price_aud_per_month: 7.99 } };
+    } else {
+      parsed.cta = { label: "Save to Garage (placeholder)", action_type: "save_vehicle", payload: { vehicle: { make, model, year, transmission, fuel, cylinders, km } } };
+    }
+
+    // Enforce better FREE quick structure
+    if (mode === "quick") {
+      parsed = ensureQuickCards(parsed);
+    }
+
+    return NextResponse.json(parsed, { status: 200 });
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message || "Ask failed" },
+      { status: 500 }
+    );
+  }
+}
+
+==== FILE: app/api/ask/prompts.ts ====
+export function buildQuickPrompt(input: {
+  make: string;
+  model: string;
+  year: number;
+  transmission: string;
+  fuel: string;
+  cylinders: string;
+  km: number | null;
+  locale: string;
+}) {
+  const { make, model, year, transmission, fuel, cylinders, km, locale } = input;
+
+  return `
+You are MechVi — "your mechanic in your pocket" for Australia.
+You MUST write like a real senior mechanic talking to a normal person (friendly, confident, practical).
+No corporate fluff. No “research financing”. No dealership talk.
+Use short, punchy sentences. Helpful, slightly cheeky is OK.
+
+Vehicle:
+- Make: ${make}
+- Model: ${model}
+- Year: ${year}
+- Transmission: ${transmission}
+- Fuel: ${fuel}
+- Cylinders: ${cylinders}
+- Km: ${km ?? "unknown"}
+
+Task:
+Return JSON ONLY using the existing response schema. Populate exactly these 4 cards, in order:
+
+1) type="summary", title="Quick Verdict"
+   - bullets: exactly 3 bullets:
+     a) First bullet MUST be "Fit: Good ✅" or "Fit: Mixed 🤔" or "Fit: Lemon 🍋"
+     b) Second bullet: One-liner verdict vibe (e.g. "Workhorse ute. Built to cop abuse." / "Good if maintained, but watch the weak spots.")
+     c) Third bullet: Who it suits (daily tradie? towing? family? city? off-road?)
+
+   - score.value MUST be 1,2,or 3 corresponding to Lemon/Mixed/Good.
+
+2) type="risk_flags", title="Common Problems / Red Flags"
+   - bullets: 3 bullets max. Realistic red flags for THIS kind of car/year OR, if unknown/new model year, give universal checks (DPF, injector, cooling, turbo hoses, servicing, accident history).
+   - Keep each bullet actionable (what to look for).
+
+3) type="costs", title="Fuel & Running Costs"
+   - bullets: 3 bullets max:
+     - fuel use vibe for AU (city vs highway)
+     - typical expensive consumables (tyres, brakes, services)
+     - what makes costs spike (towing, short trips, neglect)
+
+4) type="checklist", title="Before You Buy (5-minute check)"
+   - bullets: exactly 5 bullets, step-by-step, for a total beginner.
+     Include: tyres/brakes visual, oil/coolant check, test drive feel, smoke/overheat, service history & scan.
+
+Important:
+- If year is very new and data is uncertain, say so briefly but STILL give useful checks.
+- No legal/medical stuff. No brand bashing. No calling the car junk without explanation.
+- Locale: ${locale}. Use AU wording (km, ute, rego, etc).
+
+Return JSON only.
+`.trim();
+}
+
+==== FILE: app/components/HomeClient.tsx ====
+"use client";
+
+import { useEffect, useState } from "react";
+import HeroCarousel, { HeroSlide } from "./HeroCarousel";
+import VehicleSelector, { SelectedVehicle } from "./VehicleSelector";
+import VehicleForm from "./VehicleForm";
+
+export default function HomeClient({ email }: { email: string }) {
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<SelectedVehicle | null>(null);
+  const [showResults, setShowResults] = useState(false);
+
+  const [slide, setSlide] = useState<HeroSlide | null>(null);
+  const [slideIndex, setSlideIndex] = useState(0);
+
+  useEffect(() => { if (selected) setShowResults(true); }, [selected]);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <HeroCarousel intervalMs={6500} onSlide={(s, i) => { setSlide(s); setSlideIndex(i); }} />
+
+      {/* Top bar with always-readable background */}
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, padding: 18, pointerEvents: "none" }}>
+        <div style={{ maxWidth: 1200, margin: "0 auto", pointerEvents: "auto", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 12,
+            padding: "10px 12px", borderRadius: 18,
+            border: "1px solid rgba(255,255,255,0.35)",
+            background: "rgba(255,255,255,0.18)",
+            backdropFilter: "blur(12px)"
+          }}>
+            <img src="/mechvi-logo.svg" alt="MechVi" style={{ height: 52 }} />
+          </div>
+
+          <div style={{
+            padding: "10px 12px", borderRadius: 18,
+            border: "1px solid rgba(255,255,255,0.35)",
+            background: "rgba(255,255,255,0.18)",
+            backdropFilter: "blur(12px)",
+            color: "#fff",
+            fontSize: 12
+          }}>
+            Logged in: <b>{email}</b>
+          </div>
+        </div>
+      </div>
+
+      {/* Center dynamic text + CTA */}
+      <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", padding: 24, pointerEvents: "none" }}>
+        <div style={{ width: "min(1020px, 100%)", textAlign: "center", pointerEvents: "auto" }}>
+          <div style={{ display: "inline-flex", padding: "7px 12px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.35)", background: "rgba(255,255,255,0.14)", backdropFilter: "blur(10px)", color: "#fff", fontWeight: 900, fontSize: 12, letterSpacing: 0.8, marginBottom: 14 }}>
+            {slide?.pill || "MECHVI"}
+          </div>
+
+          <div style={{ fontSize: 56, fontWeight: 950, letterSpacing: -1.5, lineHeight: 1.02, color: "#ffffff", textShadow: "0 14px 30px rgba(0,0,0,0.42), 0 2px 10px rgba(0,0,0,0.26)", WebkitTextStroke: "0.6px rgba(0,0,0,0.22)", marginBottom: 10 }}>
+            {slide?.headline || "Buy smart. Drive happy."}
+          </div>
+
+          <div style={{ fontSize: 18, fontWeight: 650, color: "rgba(255,255,255,0.92)", textShadow: "0 10px 22px rgba(0,0,0,0.30), 0 2px 10px rgba(0,0,0,0.18)", maxWidth: 900, margin: "0 auto 18px" }}>
+            {slide?.sub || "Pick your car. Get a verdict in seconds. Learn what to check — even if you know nothing about cars."}
+          </div>
+
+          <button onClick={() => setOpen(true)}
+            style={{ padding: "16px 22px", borderRadius: 18, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.65)", color: "#fff", fontWeight: 900, fontSize: 16, cursor: "pointer", boxShadow: "0 18px 50px rgba(0,0,0,0.25)" }}>
+            Select your vehicle
+          </button>
+
+          <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 14 }}>
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} style={{ width: 10, height: 10, borderRadius: 999, background: i === slideIndex ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.40)", boxShadow: "0 6px 18px rgba(0,0,0,0.18)" }} />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Results panel */}
+      <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: 18, pointerEvents: "none", transform: showResults ? "translateY(0px)" : "translateY(420px)", transition: "transform 450ms ease" }}>
+        <div style={{ maxWidth: 1100, margin: "0 auto", pointerEvents: "auto" }}>
+          <VehicleForm initial={selected || undefined} autoRun="quick" />
+        </div>
+      </div>
+
+      <VehicleSelector open={open} onClose={() => setOpen(false)} onSelect={(v) => { setSelected(v); setOpen(false); }} />
+    </div>
+  );
+}
+
+==== FILE: app/components/VehicleForm.tsx ====
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+
+type Mode = "quick" | "report";
+type Transmission = "automatic" | "manual" | "unknown";
+type Fuel = "petrol" | "diesel" | "hybrid" | "ev" | "unknown";
+type Cyl = "3" | "4" | "5" | "6" | "8" | "10" | "12" | "unknown";
+
+type Profile = {
+  make: string;
+  model: string;
+  year: number;
+  transmission: Transmission;
+  fuel: Fuel;
+  cylinders: Cyl;
+  km: number | null;
+};
+
+type MechviCard = {
+  type: string;
+  title: string;
+  severity: "info" | "warning" | "critical";
+  bullets: string[];
+};
+
+type MechviResponse = {
+  vehicle_summary: { label: string; km: number | null; notes: string[] };
+  cards: MechviCard[];
+  cta: { label: string; action_type: string; payload: any };
+};
+
+function badgeStyle(label: string) {
+  if (label.includes("Good")) return { background: "rgba(34,197,94,0.14)", border: "1px solid rgba(34,197,94,0.35)", color: "#0f5132" };
+  if (label.includes("Lemon")) return { background: "rgba(239,68,68,0.14)", border: "1px solid rgba(239,68,68,0.35)", color: "#7a1212" };
+  return { background: "rgba(245,158,11,0.14)", border: "1px solid rgba(245,158,11,0.35)", color: "#6a4300" };
+}
+
+function Icon({ type }: { type: string }) {
+  const common = { width: 22, height: 22, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  if (type === "summary")
+    return (<svg {...common}><path d="M12 2l3 7 7 3-7 3-3 7-3-7-7-3 7-3 3-7z"/></svg>);
+  if (type === "risk_flags")
+    return (<svg {...common}><path d="M4 20V4"/><path d="M4 4h11l-1 4 3 4H4"/></svg>);
+  if (type === "costs")
+    return (<svg {...common}><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 000 7H14a3.5 3.5 0 010 7H6"/></svg>);
+  if (type === "checklist")
+    return (<svg {...common}><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>);
+  return (<svg {...common}><circle cx="12" cy="12" r="9"/></svg>);
+}
+
+function Card({ c }: { c: MechviCard }) {
+  return (
+    <div style={{
+      borderRadius: 18,
+      border: "1px solid rgba(0,0,0,0.08)",
+      background: "rgba(255,255,255,0.82)",
+      backdropFilter: "blur(14px)",
+      padding: 14,
+      boxShadow: "0 18px 50px rgba(0,0,0,0.08)",
+      color: "#111"
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <div style={{ width: 36, height: 36, borderRadius: 14, display: "grid", placeItems: "center", background: "rgba(0,0,0,0.06)" }}>
+          <Icon type={c.type} />
+        </div>
+        <div style={{ fontWeight: 950, fontSize: 15 }}>{c.title}</div>
+      </div>
+
+      <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.35 }}>
+        {(c.bullets || []).map((b, i) => (
+          <li key={i} style={{ marginBottom: 7, opacity: 0.92 }}>{b}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default function VehicleForm({ initial, autoRun }: { initial?: any; autoRun?: Mode }) {
+  const [data, setData] = useState<MechviResponse | null>(null);
+  const [raw, setRaw] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [statusLine, setStatusLine] = useState("Ready");
+  const [showRaw, setShowRaw] = useState(false);
+
+  const profile: Profile | null = useMemo(() => {
+    if (!initial?.make || !initial?.model || !initial?.year) return null;
+    return {
+      make: String(initial.make),
+      model: String(initial.model),
+      year: Number(initial.year),
+      transmission: (initial.transmission || "unknown") as Transmission,
+      fuel: (initial.fuel || "unknown") as Fuel,
+      cylinders: (initial.cylinders || "unknown") as Cyl,
+      km: initial.km === null || initial.km === undefined ? null : Number(initial.km),
+    };
+  }, [initial?.make, initial?.model, initial?.year, initial?.transmission, initial?.fuel, initial?.cylinders, initial?.km]);
+
+  const fitText = useMemo(() => {
+    const summary = data?.cards?.find((x) => x.type === "summary");
+    const fitBullet = summary?.bullets?.find((b) => /^fit:\s*/i.test(b || ""));
+    return fitBullet ? fitBullet.replace(/^fit:\s*/i, "").trim() : "Mixed 🤔";
+  }, [data]);
+
+  const orderedCards = useMemo(() => {
+    const cards = Array.isArray(data?.cards) ? data!.cards : [];
+    const order = ["summary", "risk_flags", "costs", "checklist"];
+    const map = new Map(cards.map((c) => [c.type, c]));
+    return order.map((t) => map.get(t)).filter(Boolean) as MechviCard[];
+  }, [data]);
+
+  async function submitProfile(p: Profile, mode: Mode) {
+    setLoading(true);
+    setData(null);
+    setRaw("");
+    setStatusLine("Working...");
+
+    try {
+      const payload = { mode, locale: "en-AU", intentHint: "buy", vehicleProfile: p };
+      const r = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const text = await r.text();
+      setStatusLine(`HTTP ${r.status} ${r.ok ? "OK" : "ERROR"}`);
+      setRaw(text || "(empty response body)");
+      if (r.ok && text) { try { setData(JSON.parse(text)); } catch {} }
+    } catch (e: any) {
+      setStatusLine("Request failed");
+      setRaw(String(e?.message || e || "Unknown error"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!autoRun) return;
+    if (!profile) return;
+    submitProfile(profile, autoRun);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRun, profile?.make, profile?.model, profile?.year]);
+
+  return (
+    <div style={{ padding: 16, borderRadius: 20, border: "1px solid rgba(255,255,255,0.65)", background: "rgba(255,255,255,0.55)", backdropFilter: "blur(18px)", boxShadow: "0 18px 70px rgba(0,0,0,0.10)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <div>
+          <div style={{ fontWeight: 950, color: "#111", fontSize: 16 }}>Your Verdict</div>
+          <div style={{ opacity: 0.75, fontSize: 12, color: "#111" }}>
+            {profile ? `${profile.year} ${profile.make} ${profile.model} • ${profile.transmission} • ${profile.fuel} • ${profile.cylinders} cyl` : "Select a vehicle"}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <div style={{ padding: "6px 10px", borderRadius: 999, fontWeight: 950, fontSize: 12, ...badgeStyle(fitText) }}>
+            {fitText}
+          </div>
+          <div style={{ opacity: 0.75, fontSize: 12, color: "#111" }}>{statusLine}</div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <button disabled={!profile || loading} onClick={() => profile && submitProfile(profile, "quick")}
+          style={{ padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(0,0,0,0.12)", background: "#111", color: "#fff", fontWeight: 950 }}>
+          {loading ? "Working..." : "Quick verdict (Free)"}
+        </button>
+
+        <button disabled={!profile || loading} onClick={() => profile && submitProfile(profile, "report")}
+          style={{ padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(0,0,0,0.12)", background: "#fff", color: "#111", fontWeight: 900 }}>
+          Full report $2.99 (placeholder)
+        </button>
+
+        <button onClick={() => setShowRaw((s) => !s)}
+          style={{ padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(0,0,0,0.12)", background: "rgba(255,255,255,0.85)", color: "#111", fontWeight: 900 }}>
+          {showRaw ? "Hide debug" : "Show debug"}
+        </button>
+      </div>
+
+      {data && (
+        <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+          {orderedCards.map((c) => <Card key={c.type} c={c} />)}
+        </div>
+      )}
+
+      {showRaw && (
+        <pre style={{ marginTop: 12, padding: 12, borderRadius: 14, border: "1px solid rgba(0,0,0,0.08)", background: "rgba(255,255,255,0.92)", color: "#111", whiteSpace: "pre-wrap", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+          {raw || "(no response yet)"}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+==== FILE: app/components/VehicleSelector.tsx ====
+"use client";
+
+import { useMemo, useState } from "react";
+
+export type SelectedVehicle = {
+  make: string;
+  year: number;
+  model: string;
+  transmission: "automatic" | "manual" | "unknown";
+  fuel: "petrol" | "diesel" | "hybrid" | "ev" | "unknown";
+  cylinders: "3" | "4" | "5" | "6" | "8" | "10" | "12" | "unknown";
+  km: number | null;
+};
+
+type Props = { open: boolean; onClose: () => void; onSelect: (v: SelectedVehicle) => void };
+
+const BRANDS = [
+  { name: "Toyota", file: "toyota.svg" },
+  { name: "Mazda", file: "mazda.svg" },
+  { name: "Hyundai", file: "hyundai.svg" },
+  { name: "Kia", file: "kia.svg" },
+  { name: "Ford", file: "ford.svg" },
+  { name: "Holden", file: "holden.svg" },
+  { name: "Mitsubishi", file: "mitsubishi.svg" },
+  { name: "Subaru", file: "subaru.svg" },
+  { name: "Nissan", file: "nissan.svg" },
+  { name: "Honda", file: "honda.svg" },
+  { name: "BMW", file: "bmw.svg" },
+  { name: "Mercedes-Benz", file: "mercedes.svg" },
+  { name: "Audi", file: "audi.svg" },
+];
+
+const BRAND_MODELS: Record<string, string[]> = {
+  BMW: ["320i","325i","330i","318i","X3","X5","1 Series","3 Series","5 Series"],
+  Toyota: ["Corolla","Camry","RAV4","Hilux","Yaris","Prado"],
+  Mazda: ["Mazda3","Mazda2","CX-5","CX-3","BT-50"],
+  Hyundai: ["i30","Tucson","Santa Fe","Kona"],
+  Kia: ["Cerato","Sportage","Sorento","Picanto"],
+  Ford: ["Ranger","Focus","Falcon","Everest"],
+  Holden: ["Commodore","Cruze","Colorado"],
+  Mitsubishi: ["Triton","Outlander","Pajero"],
+  Subaru: ["Forester","Outback","Impreza","WRX"],
+  Nissan: ["X-Trail","Navara","Pathfinder"],
+  Honda: ["Civic","CR-V","Accord"],
+  "Mercedes-Benz": ["C-Class","E-Class","GLC","A-Class"],
+  Audi: ["A3","A4","Q5","A6"],
+};
+
+function controlStyle() {
+  return {
+    padding: 12,
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: "rgba(255,255,255,0.92)",
+    color: "#111",
+    fontWeight: 750 as const,
+    appearance: "none" as const,
+    WebkitAppearance: "none" as const,
+    MozAppearance: "none" as const,
+    outline: "none",
+  };
+}
+
+function tileStyle(active: boolean) {
+  return {
+    padding: 14,
+    borderRadius: 18,
+    border: active ? "1px solid rgba(0,0,0,0.16)" : "1px solid rgba(0,0,0,0.10)",
+    background: active ? "rgba(255,255,255,0.98)" : "rgba(255,255,255,0.86)",
+    cursor: "pointer",
+    display: "grid",
+    placeItems: "center" as const,
+    gap: 10,
+    boxShadow: active ? "0 18px 40px rgba(0,0,0,0.10)" : "0 10px 24px rgba(0,0,0,0.06)",
+    transition: "transform 120ms ease, box-shadow 120ms ease",
+    transform: active ? "translateY(-1px)" : "translateY(0px)",
+  };
+}
+
+export default function VehicleSelector({ open, onClose, onSelect }: Props) {
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [brand, setBrand] = useState<string>("");
+  const [year, setYear] = useState<number | null>(null);
+  const [yearSearch, setYearSearch] = useState("");
+  const [model, setModel] = useState<string>("");
+  const [modelSearch, setModelSearch] = useState("");
+  const [trans, setTrans] = useState<"automatic" | "manual" | "unknown">("unknown");
+  const [fuel, setFuel] = useState<"petrol" | "diesel" | "hybrid" | "ev" | "unknown">("unknown");
+  const [cyl, setCyl] = useState<"3"|"4"|"5"|"6"|"8"|"10"|"12"|"unknown">("unknown");
+  const [km, setKm] = useState<string>("");
+
+  const years = useMemo(() => {
+    const now = new Date().getFullYear();
+    const list: number[] = [];
+    for (let y = now; y >= 1900; y--) list.push(y);
+    const s = yearSearch.trim();
+    if (!s) return list;
+    return list.filter((x) => String(x).includes(s));
+  }, [yearSearch]);
+
+  const modelOptions = useMemo(() => {
+    const base = BRAND_MODELS[brand] || [];
+    const s = modelSearch.trim().toLowerCase();
+    const filtered = s ? base.filter((m) => m.toLowerCase().includes(s)) : base;
+    return filtered.slice(0, 24);
+  }, [brand, modelSearch]);
+
+  function resetAll() {
+    setStep(1); setBrand(""); setYear(null); setYearSearch("");
+    setModel(""); setModelSearch(""); setTrans("unknown");
+    setFuel("unknown"); setCyl("unknown"); setKm("");
+  }
+
+  function close() { resetAll(); onClose(); }
+
+  function confirm() {
+    if (!brand || !year || !model.trim()) return;
+    onSelect({ make: brand, year, model: model.trim(), transmission: trans, fuel, cylinders: cyl, km: km ? Number(km) : null });
+    close();
+  }
+
+  if (!open) return null;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "grid", placeItems: "center", zIndex: 50, padding: 16 }} onMouseDown={close}>
+      <div onMouseDown={(e) => e.stopPropagation()}
+        style={{ width: "min(980px, 100%)", borderRadius: 24, overflow: "hidden", border: "1px solid rgba(0,0,0,0.08)", background: "rgba(255,255,255,0.92)", backdropFilter: "blur(14px)", boxShadow: "0 22px 70px rgba(0,0,0,0.18)", color: "#111" }}>
+        <div style={{ padding: 18, display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+          <div>
+            <div style={{ fontWeight: 950, fontSize: 18 }}>Select your vehicle</div>
+            <div style={{ opacity: 0.7, fontSize: 12 }}>Brand → Year → Model → Options</div>
+          </div>
+          <button onClick={close} style={{ padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(0,0,0,0.10)", background: "#fff", color: "#111", fontWeight: 900 }}>
+            Close
+          </button>
+        </div>
+
+        <div style={{ padding: "0 18px 18px" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", opacity: 0.85, fontSize: 12 }}>
+            <span style={{ fontWeight: 900 }}>Step {step}/3</span>
+            <span>•</span><span>{brand || "Choose brand"}</span>
+            <span>•</span><span>{year || "Choose year"}</span>
+            <span>•</span><span>{model || "Choose model"}</span>
+          </div>
+
+          {step === 1 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontWeight: 950, marginBottom: 10 }}>Pick a brand</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 12 }}>
+                {BRANDS.map((b) => (
+                  <div
+                    key={b.name}
+                    style={tileStyle(brand === b.name)}
+                    onClick={() => { setBrand(b.name); setModel(""); setStep(2); }}  // AUTO ADVANCE
+                  >
+                    <div style={{ width: 64, height: 34, display: "grid", placeItems: "center" }}>
+                      <img
+                        src={`/brands/${b.file}`}
+                        alt={`${b.name} logo`}
+                        style={{ maxWidth: 64, maxHeight: 34, objectFit: "contain" }}
+                      />
+                    </div>
+                    <div style={{ fontSize: 12, fontWeight: 900, textAlign: "center" }}>{b.name}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 950 }}>Pick a year</div>
+                <input placeholder="Search year (e.g. 2004)" value={yearSearch} onChange={(e) => setYearSearch(e.target.value.replace(/\D/g, ""))} style={controlStyle()} />
+              </div>
+
+              <div style={{ marginTop: 10, maxHeight: 300, overflow: "auto", display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 8 }}>
+                {years.slice(0, 160).map((y) => (
+                  <button
+                    key={y}
+                    onClick={() => { setYear(y); setStep(3); }}   // AUTO ADVANCE
+                    style={{ padding: "10px 0", borderRadius: 14, border: "1px solid rgba(0,0,0,0.10)", background: "rgba(255,255,255,0.92)", color: "#111", fontWeight: 900, cursor: "pointer" }}
+                  >
+                    {y}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
+                <button onClick={() => setStep(1)} style={{ padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(0,0,0,0.10)", background: "#fff", fontWeight: 900 }}>
+                  Change brand
+                </button>
+              </div>
+            </div>
+          )}
+
+          {step === 3 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 950 }}>Pick a model</div>
+                <input placeholder="Search model (e.g. 320i)" value={modelSearch} onChange={(e) => setModelSearch(e.target.value)} style={controlStyle()} />
+              </div>
+
+              <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+                {modelOptions.map((m) => (
+                  <button key={m} onClick={() => setModel(m)}
+                    style={{ padding: 12, borderRadius: 16, border: model === m ? "1px solid rgba(0,0,0,0.20)" : "1px solid rgba(0,0,0,0.10)", background: "rgba(255,255,255,0.92)", color: "#111", fontWeight: 950, cursor: "pointer", textAlign: "left" }}>
+                    {m}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <select value={trans} onChange={(e) => setTrans(e.target.value as any)} style={controlStyle()}>
+                  <option value="unknown">Transmission (unknown)</option>
+                  <option value="automatic">Automatic</option>
+                  <option value="manual">Manual</option>
+                </select>
+
+                <select value={fuel} onChange={(e) => setFuel(e.target.value as any)} style={controlStyle()}>
+                  <option value="unknown">Fuel (unknown)</option>
+                  <option value="petrol">Petrol</option>
+                  <option value="diesel">Diesel</option>
+                  <option value="hybrid">Hybrid</option>
+                  <option value="ev">EV</option>
+                </select>
+
+                <select value={cyl} onChange={(e) => setCyl(e.target.value as any)} style={controlStyle()}>
+                  <option value="unknown">Cylinders (unknown)</option>
+                  <option value="3">3 cyl</option>
+                  <option value="4">4 cyl</option>
+                  <option value="5">5 cyl</option>
+                  <option value="6">6 cyl</option>
+                  <option value="8">V8</option>
+                  <option value="10">V10</option>
+                  <option value="12">V12</option>
+                </select>
+
+                <input placeholder="Km (optional)" value={km} onChange={(e) => setKm(e.target.value.replace(/\D/g, ""))} style={controlStyle()} />
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 16 }}>
+                <button onClick={() => setStep(2)} style={{ padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(0,0,0,0.10)", background: "#fff", fontWeight: 900 }}>
+                  Change year
+                </button>
+
+                <button onClick={confirm} disabled={!model.trim()}
+                  style={{ padding: "12px 14px", borderRadius: 16, border: "1px solid rgba(0,0,0,0.10)", background: "#0b0b0d", color: "#fff", fontWeight: 950, opacity: !model.trim() ? 0.6 : 1 }}>
+                  Use this vehicle
+                </button>
+              </div>
+            </div>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+==== FILE: prisma/schema.prisma ====
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+ url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String   @id @default(cuid())
+  name           String?
+  email          String   @unique
+  passwordHash   String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tier           Tier     @default(FREE)
+  reportCredits  Int      @default(0)
+
+  usage          Usage[]
+}
+
+model Usage {
+  id        String   @id @default(cuid())
+  userId    String
+  monthKey  String
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, monthKey])
+}
+
+enum Tier {
+  FREE
+  REPORT
+  SUBSCRIBER
+}

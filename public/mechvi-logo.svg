@@ -1,0 +1,29 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="320" viewBox="0 0 1400 320">
+  <defs>
+    <linearGradient id="ink" x1="0" x2="1">
+      <stop offset="0" stop-color="#0b0b0d"/>
+      <stop offset="1" stop-color="#16161c"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" x2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.70"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Badge -->
+  <g transform="translate(36,36)">
+    <rect width="248" height="248" rx="72" fill="rgba(0,0,0,0.72)"/>
+    <rect x="18" y="18" width="212" height="212" rx="62" fill="url(#ink)" opacity="0.92"/>
+
+    <!-- Monogram MV (bold + tight, premium) -->
+    <path d="M74 198V96h28l30 58 30-58h28v102h-26v-55l-23 43h-18l-23-43v55H74z" fill="url(#shine)"/>
+    <path d="M186 96h30l-38 102h-22l-38-102h30l19 60 19-60z" fill="url(#shine)" opacity="0.95"/>
+
+    <!-- small “speed line” -->
+    <path d="M52 84h144" stroke="rgba(255,255,255,0.22)" stroke-width="6" stroke-linecap="round"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="320" y="175" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial" font-size="132" font-weight="950" fill="#ffffff" letter-spacing="-3">MechVi</text>
+  <text x="324" y="238" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial" font-size="34" font-weight="650" fill="#ffffff" opacity="0.86">Your mechanic in your pocket</text>
+</svg>
