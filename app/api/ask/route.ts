@@ -243,6 +243,73 @@ function ensureQuickCards(parsed: any) {
   return parsed;
 }
 
+function logAskWarning(stage: string, detail?: Record<string, unknown>) {
+  try {
+    console.error("[mechvi/ask]", stage, detail ? JSON.stringify(detail) : "");
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Prefer SDK output_text; if empty, stitch text parts from output[] (Responses API may omit output_text). */
+function extractResponsesOutputText(resp: any): string {
+  const direct = typeof resp?.output_text === "string" ? resp.output_text.trim() : "";
+  if (direct) return direct;
+  const out = resp?.output;
+  if (!Array.isArray(out)) return "";
+  const parts: string[] = [];
+  for (const item of out) {
+    if (item?.type === "message" && Array.isArray(item.content)) {
+      for (const part of item.content) {
+        if (typeof part?.text === "string") parts.push(part.text);
+      }
+    }
+    if (typeof item?.text === "string") parts.push(item.text);
+  }
+  return parts.join("").trim();
+}
+
+function parseModelJsonText(raw: string): { parsed: unknown } | null {
+  const t = raw.trim();
+  if (!t) return null;
+  try {
+    return { parsed: JSON.parse(t) };
+  } catch {
+    const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) {
+      try {
+        return { parsed: JSON.parse(fence[1].trim()) };
+      } catch {
+        /* continue */
+      }
+    }
+    const start = t.indexOf("{");
+    const end = t.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return { parsed: JSON.parse(t.slice(start, end + 1)) };
+      } catch {
+        /* empty */
+      }
+    }
+    return null;
+  }
+}
+
+function buildFallbackResponse(mode: Mode, access: Access, vehicleLabel: string, reason: string) {
+  const parsed = ensureQuickCards({});
+  parsed.vehicle_summary.label = vehicleLabel;
+  parsed.vehicle_summary.notes = [reason];
+  if (mode === "quick" && access !== "SUBSCRIBER") {
+    parsed.cta = {
+      label: "Unlock the full $2.99 pre-purchase checklist (placeholder)",
+      action_type: "paywall",
+      payload: { product: "mechvi_report", price_aud: 2.99 },
+    };
+  }
+  return parsed;
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -345,37 +412,82 @@ In plan, give first 30 days actions + what to service first.
       },
     });
 
-    const jsonText = resp.output_text;
+    const vehicleLabel = `${year} ${make} ${model}`.trim();
+    const jsonText = extractResponsesOutputText(resp);
+
     if (!jsonText) {
-      return NextResponse.json({ error: "Model returned empty output_text", debug: { model: modelName } }, { status: 500 });
-    }
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(jsonText);
-    } catch {
-      return NextResponse.json({ error: "Invalid JSON from model", raw: jsonText.slice(0, 600) }, { status: 500 });
-    }
-
-    if (userId) {
-      await prisma.usage.update({
-        where: { userId_monthKey: { userId, monthKey: mk } },
-        data: { count: { increment: 1 } },
+      logAskWarning("empty_model_output", {
+        model: modelName,
+        has_response_error: !!resp?.error,
       });
-    } else if (mode === "quick") {
-      recordAnonQuickSuccess(getClientIp(req), mk);
+      return NextResponse.json(buildFallbackResponse(mode, access, vehicleLabel, "Model returned no text output."), {
+        status: 200,
+      });
     }
 
-    // Enforce quick structure
-    if (mode === "quick") parsed = ensureQuickCards(parsed);
+    const parsedJson = parseModelJsonText(jsonText);
+    if (!parsedJson) {
+      logAskWarning("json_parse_failed", {
+        model: modelName,
+        sample_len: jsonText.length,
+      });
+      return NextResponse.json(buildFallbackResponse(mode, access, vehicleLabel, "Could not parse model JSON."), {
+        status: 200,
+      });
+    }
+
+    let parsed: any = parsedJson.parsed;
+
+    // Enforce quick structure before billing / response (avoid charging if normalization fails)
+    if (mode === "quick") {
+      try {
+        parsed = ensureQuickCards(parsed);
+      } catch (cardErr: any) {
+        logAskWarning("ensure_quick_cards_failed", { name: cardErr?.name });
+        return NextResponse.json(
+          buildFallbackResponse(mode, access, vehicleLabel, "Could not normalize quick cards."),
+          { status: 200 },
+        );
+      }
+    }
+
+    try {
+      if (userId) {
+        await prisma.usage.upsert({
+          where: { userId_monthKey: { userId, monthKey: mk } },
+          update: { count: { increment: 1 } },
+          create: { userId, monthKey: mk, count: 1 },
+        });
+      } else if (mode === "quick") {
+        recordAnonQuickSuccess(getClientIp(req), mk);
+      }
+    } catch (usageErr: any) {
+      logAskWarning("usage_increment_failed", {
+        model: modelName,
+        code: usageErr?.code,
+        name: usageErr?.name,
+      });
+    }
 
     // CTA enforcement
     if (mode === "quick" && access !== "SUBSCRIBER") {
       parsed.cta = { label: "Unlock the full $2.99 pre-purchase checklist (placeholder)", action_type: "paywall", payload: { product: "mechvi_report", price_aud: 2.99 } };
     }
 
-    return NextResponse.json(parsed, { status: 200 });
+    try {
+      return NextResponse.json(parsed, { status: 200 });
+    } catch (serializeErr: any) {
+      logAskWarning("response_serialize_failed", { name: serializeErr?.name });
+      return NextResponse.json(
+        buildFallbackResponse(mode, access, vehicleLabel, "Response could not be serialized."),
+        { status: 200 },
+      );
+    }
   } catch (e: any) {
+    logAskWarning("ask_unhandled", {
+      name: e?.name,
+      message: typeof e?.message === "string" ? e.message.slice(0, 240) : undefined,
+    });
     return NextResponse.json({ error: e?.message || "Ask failed" }, { status: 500 });
   }
 }
