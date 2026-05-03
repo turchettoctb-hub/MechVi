@@ -56,3 +56,140 @@ button:hover {
   text-shadow: 0 18px 40px rgba(0,0,0,0.65), 0 2px 10px rgba(0,0,0,0.35);
 }
 
+/* --- Home hero & vehicle selector (responsive) --- */
+
+.mechvi-hero-root {
+  position: relative;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
+  background: #07080b;
+}
+
+.mechvi-hero-img {
+  object-fit: cover;
+  object-position: center 38%;
+  transform: scale(1.06);
+}
+
+@media (max-width: 640px) {
+  .mechvi-hero-img {
+    object-position: center 22%;
+    transform: scale(1.09);
+  }
+}
+
+.mechvi-hero-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(900px 520px at 18% 22%, rgba(255, 255, 255, 0.10), transparent 60%),
+    radial-gradient(900px 620px at 80% 28%, rgba(255, 255, 255, 0.06), transparent 60%),
+    linear-gradient(to bottom, rgba(7, 8, 11, 0.88), rgba(7, 8, 11, 0.30) 42%, rgba(7, 8, 11, 0.92));
+}
+
+@media (max-width: 640px) {
+  .mechvi-hero-overlay {
+    background: linear-gradient(
+      to bottom,
+      rgba(7, 8, 11, 0.92),
+      rgba(7, 8, 11, 0.42) 38%,
+      rgba(7, 8, 11, 0.94)
+    );
+  }
+}
+
+.mechvi-hero-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 140px rgba(0, 0, 0, 0.85);
+}
+
+@media (max-width: 640px) {
+  .mechvi-hero-vignette {
+    box-shadow: inset 0 0 100px rgba(0, 0, 0, 0.78);
+  }
+}
+
+.mechvi-safe-pad {
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right: max(16px, env(safe-area-inset-right));
+  padding-top: max(12px, env(safe-area-inset-top));
+}
+
+.mechvi-safe-pad-bottom {
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+
+.mechvi-home-logo {
+  height: clamp(46px, 12vw, 60px);
+  width: auto;
+  display: block;
+}
+
+.mechvi-selector-brand-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+}
+
+@media (min-width: 640px) {
+  .mechvi-selector-brand-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 12px;
+  }
+}
+
+.mechvi-selector-year-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(68px, 1fr));
+}
+
+@media (min-width: 640px) {
+  .mechvi-selector-year-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+.mechvi-selector-model-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 480px) {
+  .mechvi-selector-model-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 720px) {
+  .mechvi-selector-model-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.mechvi-selector-option-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mechvi-selector-shell {
+  width: min(980px, 100%);
+  max-height: min(92vh, 92dvh);
+  display: flex;
+  flex-direction: column;
+}
+
+.mechvi-selector-scroll {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1;
+  min-height: 0;
+}
+
