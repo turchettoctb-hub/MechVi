@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useMemo, useState } from "react";
+import { getCatalogYearListForBrandName } from "@/lib/vehicle-catalog/queries";
 
 export type SelectedVehicle = {
   make: string;
@@ -20,6 +21,7 @@ const BRANDS = [
   { name: "Hyundai", file: "hyundai.svg" },
   { name: "Kia", file: "kia.svg" },
   { name: "Ford", file: "ford.svg" },
+  { name: "Jeep", file: "jeep.svg" },
   { name: "Holden", file: "holden.svg" },
   { name: "Mitsubishi", file: "mitsubishi.svg" },
   { name: "Subaru", file: "subaru.svg" },
@@ -163,14 +165,26 @@ export default function VehicleSelector({ open, onClose, onSelect }: Props) {
   const [cyl, setCyl] = useState<"3"|"4"|"5"|"6"|"8"|"10"|"12"|"unknown">("unknown");
   const [km, setKm] = useState<string>("");
 
-  const years = useMemo(() => {
+  /** Legacy full range when make is not in AU_VEHICLE_CATALOG seed yet */
+  const legacyYearRange = useMemo(() => {
     const now = new Date().getFullYear();
     const list: number[] = [];
     for (let y = now; y >= 1900; y--) list.push(y);
+    return list;
+  }, []);
+
+  /** Catalog-backed years for BMW, Toyota, Holden, Jeep seeds — parallel to legacy BRAND_MODELS flow */
+  const catalogYearsForBrand = useMemo(
+    () => (brand ? getCatalogYearListForBrandName(brand) : null),
+    [brand],
+  );
+
+  const years = useMemo(() => {
+    const base = catalogYearsForBrand ?? legacyYearRange;
     const s = yearSearch.trim();
-    if (!s) return list;
-    return list.filter((x) => String(x).includes(s));
-  }, [yearSearch]);
+    if (!s) return base;
+    return base.filter((x) => String(x).includes(s));
+  }, [yearSearch, catalogYearsForBrand, legacyYearRange]);
 
   const modelOptions = useMemo(() => {
     const base = BRAND_MODELS[brand] || [];
@@ -244,6 +258,7 @@ export default function VehicleSelector({ open, onClose, onSelect }: Props) {
                     style={tileStyle(brand === b.name)}
                     onClick={() => {
                       setBrand(b.name);
+                      setYear(null);
                       setModel("");
                       setStep(2);
                     }}
@@ -251,6 +266,7 @@ export default function VehicleSelector({ open, onClose, onSelect }: Props) {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
                         setBrand(b.name);
+                        setYear(null);
                         setModel("");
                         setStep(2);
                       }
@@ -276,6 +292,11 @@ export default function VehicleSelector({ open, onClose, onSelect }: Props) {
                 <div style={{ fontWeight: 950 }}>Pick a year</div>
                 <input placeholder="Search year (e.g. 2004)" value={yearSearch} onChange={(e) => setYearSearch(e.target.value.replace(/\D/g, ""))} style={{ ...controlStyle(), flex: "1 1 160px", minWidth: 0 }} />
               </div>
+              {catalogYearsForBrand && (
+                <div style={{ marginTop: 8, fontSize: 11, opacity: 0.72, fontWeight: 650 }}>
+                  Showing AU catalog years for {brand}
+                </div>
+              )}
 
               <div className="mechvi-selector-year-grid" style={{ marginTop: 10, maxHeight: 320, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
                 {years.slice(0, 160).map((y) => (
