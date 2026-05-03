@@ -155,20 +155,74 @@ Market context: Australia (AU).
 
 Return JSON ONLY matching the MechVi schema. No markdown.
 
-Rules for QUICK (FREE):
-- Use exactly 4 cards in this order: summary, risk_flags, costs, checklist
-- Each card bullets: 3–5 max (short but strong).
-- summary.score.value must be 1..3 only:
-  3=Good ✅, 2=Mixed 🤔, 1=Lemon 🍋
-- summary.bullets must start with "Fit: <Good/Mixed/Lemon>" as bullet #1.
-- risk_flags: concrete red flags + what they mean.
-- costs: include a simple table with columns: Item | What to expect (AU language).
-- checklist: beginner 10-minute checks (torch/phone OK), step-by-step bullets.
+Rules for QUICK (FREE) — follow exactly:
+- Set vehicle_summary.label to exactly: "${vehicleLabel}" (same spelling as above).
+- Use exactly 4 cards in this order: summary, risk_flags, costs, checklist (types must match).
+- MANDATORY: every one of those four cards MUST have a "bullets" array with at least 3 strings and at most 5. Never [] or null — every bullet must be useful for THIS vehicle, not filler like "see manual".
+- summary: bullets[0] MUST be exactly "Fit: Good ✅" OR "Fit: Mixed 🤔" OR "Fit: Lemon 🍋" matching summary.score.value (3=Good, 2=Mixed, 1=Lemon). Then add at least 3 more bullets (AU-specific buying or ownership reality).
+- risk_flags: at least 3 bullets — concrete things to verify on this model/era in AU (leaks, rust spots, gearbox feel, timing chain/belt, DPF if diesel, etc.).
+- costs: (1) at least 3 bullets on realistic AU running costs for this car; (2) table.rows MUST have at least 3 rows, columns exactly ["Item","What to expect"], each row two plain strings (e.g. tyres, brakes, scheduled service).
+- checklist: at least 3 bullets — 10-minute pre-purchase checks (torch, phone torch, fluids, tyres, cold start).
 
 CTA:
 - If FREE: cta.label = "Unlock the full $2.99 pre-purchase checklist (placeholder)" action_type="paywall"
 - If SUBSCRIBER: cta.label = "Save to Garage (placeholder)" action_type="save_vehicle"
 `.trim();
+}
+
+function padBulletList(existing: unknown, minCount: number, defaults: string[], maxOut: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  if (Array.isArray(existing)) {
+    for (const x of existing) {
+      const s = String(x ?? "").trim();
+      if (s && !seen.has(s)) {
+        seen.add(s);
+        out.push(s);
+      }
+    }
+  }
+  for (const d of defaults) {
+    if (out.length >= minCount) break;
+    const s = d.trim();
+    if (!seen.has(s)) {
+      seen.add(s);
+      out.push(s);
+    }
+  }
+  return out.slice(0, maxOut);
+}
+
+function summaryPad(label: string) {
+  return [
+    `For the ${label}: cold start first — rattles, long crank, or blue smoke on start-up are serious haggle points.`,
+    `AU check: sills, boot floor, and windscreen gutters for rust — repairs here get expensive fast.`,
+    `Service history beats shiny paint — receipts for belts/chains, fluids, and brakes matter more than km alone.`,
+  ];
+}
+
+function riskPad(label: string) {
+  return [
+    `Walk around the ${label}: panel gaps, overspray, and mismatched tyres often mean crash repair or neglect.`,
+    `On the test drive in traffic — lazy gearbox shifts, vague steering, or hot smells need answers before you pay.`,
+    `Look up this exact generation for known faults — what’s “normal” on forums is what you’ll pay for later.`,
+  ];
+}
+
+function costsPad(label: string) {
+  return [
+    `Budget beyond the sticker: the ${label} still needs tyres, brakes, fluids, and rego — plan yearly AU workshop costs.`,
+    `Some badges charge more for filters, suspension bits, or electronics — ring a local specialist for a ballpark.`,
+    `Insurance varies by postcode and driver — get a quote before you commit, not after.`,
+  ];
+}
+
+function checklistPad(label: string) {
+  return [
+    `Under bonnet on the ${label}: oil level, coolant colour, crusty reservoirs, cracked belts — photos if unsure.`,
+    `Tyres: tread depth inside and out, uneven wear, and date codes — odd wear hints alignment or shocks.`,
+    `Dash lights: engine, ABS, airbag — anything lit needs a reason; cleared codes can hide a recent problem.`,
+  ];
 }
 
 function ensureQuickCards(parsed: any) {
@@ -200,6 +254,8 @@ function ensureQuickCards(parsed: any) {
   if (!byType.costs) byType.costs = baseCard("costs", "Running Costs Snapshot");
   if (!byType.checklist) byType.checklist = baseCard("checklist", "10-Minute Checks (Beginner)");
 
+  const label = String(parsed.vehicle_summary?.label || "").trim() || "This vehicle";
+
   const raw = Number(byType.summary?.score?.value);
   const normalized = raw === 3 ? 3 : raw === 1 ? 1 : 2;
   const fitName = normalized === 3 ? "Good ✅" : normalized === 2 ? "Mixed 🤔" : "Lemon 🍋";
@@ -218,12 +274,12 @@ function ensureQuickCards(parsed: any) {
 
   const sb: string[] = Array.isArray(byType.summary.bullets) ? byType.summary.bullets.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
   const filtered = sb.filter((b) => !/^fit:\s*/i.test(b));
-  byType.summary.bullets = [`Fit: ${fitName}`, ...filtered].slice(0, 5);
+  const summaryRest = padBulletList(filtered, 3, summaryPad(label), 4);
+  byType.summary.bullets = [`Fit: ${fitName}`, ...summaryRest].slice(0, 5);
 
   byType.risk_flags.title = "Red Flags (Australia)";
   byType.risk_flags.severity = normalized === 1 ? "critical" : "warning";
-  if (!Array.isArray(byType.risk_flags.bullets)) byType.risk_flags.bullets = [];
-  byType.risk_flags.bullets = byType.risk_flags.bullets.slice(0, 5);
+  byType.risk_flags.bullets = padBulletList(byType.risk_flags.bullets, 3, riskPad(label), 5);
 
   byType.costs.title = "Running Costs Snapshot";
   byType.costs.severity = "info";
@@ -231,12 +287,27 @@ function ensureQuickCards(parsed: any) {
     byType.costs.table = { columns: ["Item", "What to expect"], rows: [] };
   }
   if (!byType.costs.table.columns.length) byType.costs.table.columns = ["Item", "What to expect"];
-  byType.costs.table.rows = (byType.costs.table.rows || []).slice(0, 6);
+  const costRowsIn = Array.isArray(byType.costs.table.rows) ? byType.costs.table.rows : [];
+  const goodCostRows = costRowsIn.filter(
+    (r: any) => Array.isArray(r) && r.length >= 2 && String(r[0] ?? "").trim() && String(r[1] ?? "").trim(),
+  );
+  const costRowsDefault: string[][] = [
+    [`${label} — scheduled service`, "Typical AU interval service; add if filters, fluids, or spark plugs are overdue."],
+    ["Tyres & brakes", "Most owners feel these first — check pad life, shudder under braking, and tyre date codes."],
+    ["Fluids & leaks", "Oil weeps, coolant stains, or dark ATF are leverage on price — don’t ignore them."],
+  ];
+  const mergedCostRows = [...goodCostRows];
+  let cri = 0;
+  while (mergedCostRows.length < 3 && cri < costRowsDefault.length) {
+    mergedCostRows.push(costRowsDefault[cri]);
+    cri++;
+  }
+  byType.costs.table.rows = mergedCostRows.slice(0, 6);
+  byType.costs.bullets = padBulletList(byType.costs.bullets, 3, costsPad(label), 5);
 
   byType.checklist.title = "10-Minute Checks (Beginner)";
   byType.checklist.severity = "info";
-  if (!Array.isArray(byType.checklist.bullets)) byType.checklist.bullets = [];
-  byType.checklist.bullets = byType.checklist.bullets.slice(0, 6);
+  byType.checklist.bullets = padBulletList(byType.checklist.bullets, 3, checklistPad(label), 6);
 
   parsed.cards = wantOrder.map((t) => byType[t]);
   for (const c of parsed.cards) c.actions = [];
@@ -297,9 +368,9 @@ function parseModelJsonText(raw: string): { parsed: unknown } | null {
 }
 
 function buildFallbackResponse(mode: Mode, access: Access, vehicleLabel: string, reason: string) {
-  const parsed = ensureQuickCards({});
-  parsed.vehicle_summary.label = vehicleLabel;
-  parsed.vehicle_summary.notes = [reason];
+  const parsed = ensureQuickCards({
+    vehicle_summary: { label: vehicleLabel, km: null, notes: [reason] },
+  });
   if (mode === "quick" && access !== "SUBSCRIBER") {
     parsed.cta = {
       label: "Unlock the full $2.99 pre-purchase checklist (placeholder)",
@@ -329,6 +400,8 @@ export async function POST(req: Request) {
     if (!make || !model || !year) {
       return NextResponse.json({ error: "Missing vehicleProfile fields (make/model/year)." }, { status: 400 });
     }
+
+    const vehicleLabel = `${year} ${make} ${model}`.trim();
 
     // Determine access
     let access: Access = "FREE";
@@ -412,7 +485,6 @@ In plan, give first 30 days actions + what to service first.
       },
     });
 
-    const vehicleLabel = `${year} ${make} ${model}`.trim();
     const jsonText = extractResponsesOutputText(resp);
 
     if (!jsonText) {
@@ -441,6 +513,9 @@ In plan, give first 30 days actions + what to service first.
     // Enforce quick structure before billing / response (avoid charging if normalization fails)
     if (mode === "quick") {
       try {
+        parsed = parsed && typeof parsed === "object" ? parsed : {};
+        const prevVs = typeof parsed.vehicle_summary === "object" && parsed.vehicle_summary ? parsed.vehicle_summary : {};
+        parsed.vehicle_summary = { ...prevVs, label: vehicleLabel };
         parsed = ensureQuickCards(parsed);
       } catch (cardErr: any) {
         logAskWarning("ensure_quick_cards_failed", { name: cardErr?.name });
